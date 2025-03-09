@@ -7,6 +7,7 @@ from typing import Optional, List
 from chainlit.types import ThreadDict
 from pathlib import Path
 from models import AgentProfile
+from chainlit.input_widget import Select, Switch, Slider
 
 # Load environment variables
 load_dotenv()
@@ -71,23 +72,46 @@ async def chat_profile():
 
 @cl.on_chat_start
 async def start():
+    #Set chat settings options
+    settings = await cl.ChatSettings(
+        [
+            Select(
+                id="Model",
+                label="Model",
+                values=["claude-3.5sonnet","gpt-4o", "grok3", "qwen2.5", "deepseek", "gemini-1.5pro"],
+                initial_index=1,
+            ),
+            Switch(id="Streaming", label="OpenAI - Stream Tokens", initial=False),
+            Slider(
+                id="Temperature",
+                label="OpenAI - Temperature",
+                initial=0,
+                min=0,
+                max=2,
+                step=0.1,
+            ),
+        ]
+    ).send()
+    # Set chat history based on the chat profile
     chat_profile = cl.user_session.get("chat_profile")
     message_list = AGENT_PROFILES[chat_profile].get("message_list") if chat_profile else []
     cl.user_session.set("chat_history", message_list)
     await cl.Message(content=f"Let's start the personality test by the {chat_profile}?").send()
 
+@cl.on_settings_update
+async def setup_agent(settings):
+    print("New Settings\n", settings)
+    cl.user_session.set("chat_settings", settings)
+
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
     cl.user_session.set("chat_history", [])
-
-    # user_session = thread["metadata"]
     
     for message in thread["steps"]:
         if message["type"] == "user_message":
             cl.user_session.get("chat_history").append({"role": "user", "content": message["output"]})
         elif message["type"] == "assistant_message":
             cl.user_session.get("chat_history").append({"role": "assistant", "content": message["output"]})
-
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -96,11 +120,11 @@ async def on_message(message: cl.Message):
         chat_history = cl.user_session.get("chat_history")
         chat_history.append({"role": "user", "content": message.content})   
         chat_response = await client.chat.completions.create(
-                model="gpt-4o",  
-                # model="gpt-4ox",  #changed to fail till rest of the code is written
-                messages=chat_history,
-                temperature=0.7,
-            )
+            model="gpt-4o",  
+            # model="gpt-4ox",  #changed to fail till rest of the code is written
+            messages=chat_history,
+            temperature=0.7,
+        )
         response_content = chat_response.choices[0].message.content
         chat_history.append({"role": "assistant", "content": response_content})
         await cl.Message(content=response_content).send()
