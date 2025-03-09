@@ -72,4 +72,4 @@ coverage.xml
 .hypothesis/
 
 # Chainlit specific
-.chainlit/
+.files/
