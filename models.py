@@ -1,5 +1,6 @@
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Union
 from pydantic import BaseModel, HttpUrl
+from azure.ai.inference.models import SystemMessage, UserMessage, AssistantMessage
 # from chainlit.message import Message
 
 class Message(BaseModel):
@@ -11,6 +12,6 @@ class Message(BaseModel):
 class AgentProfile(BaseModel):
     name: str
     description: str
-    message_list: List[Message]
+    message_list: List[Optional[Message]]
     tools_list: Optional[List[str]] = None
     modality_list: Optional[List[str]] = None
