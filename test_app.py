@@ -8,9 +8,7 @@ from pathlib import Path
 from models import AgentProfile
 from chainlit.input_widget import Select, Switch, Slider
 
-from openai import AsyncOpenAI, OpenAI
 from azure.ai.inference import ChatCompletionsClient
-from azure.ai.inference.models import SystemMessage, UserMessage
 from azure.core.credentials import AzureKeyCredential
 
 # Load environment variables
@@ -31,15 +29,13 @@ AVAILABLE_MODELS = [
     # "qwen2.5", 
     # "gemini-1.5pro"
 ]
-
 # Azure OpenAI configuration
-api_key = os.getenv("AZURE_OPENAI_API_KEY")  # Your GitHub PAT
-github_pat_token = os.getenv("GITHUB_PAT_KEY")  # Your GitHub PAT
-base_url = os.getenv("AZURE_INFERENCE_BASE_URL")  # Azure OpenAI endpoint
+GITHUB_PAT_TOKEN = os.getenv("GITHUB_PAT_KEY")  
+BASE_URL = os.getenv("AZURE_INFERENCE_BASE_URL")   # Azure OpenAI endpoint
 
 client = ChatCompletionsClient(
-    endpoint=base_url,
-    credential=AzureKeyCredential(github_pat_token),
+    endpoint=BASE_URL,
+    credential=AzureKeyCredential(GITHUB_PAT_TOKEN),
 )
 
 # Instrument the OpenAI client
@@ -95,25 +91,40 @@ async def chat_profile():
     return chat_profiles
 
 async def update_chat_settings():
-    settings = await cl.ChatSettings(
+    default_settings = {
+        "Model": cl.user_session.get("chat_settings", {}).get("Model", "gpt-4o-mini"),
+        # "Model_index": AVAILABLE_MODELS.index(cl.user_session.get("chat_settings", {}).get("Model")) if cl.user_session.get("chat_settings", {}).get("Model") in AVAILABLE_MODELS else 0,
+        "Streaming": True,
+        "Temperature": 0
+    }
+    settings = cl.ChatSettings(
         [
             Select(
                 id="Model",
                 label="Model",
                 values=AVAILABLE_MODELS,
-                initial_index=AVAILABLE_MODELS.index(cl.user_session.get("chat_settings", {}).get("Model")) if cl.user_session.get("chat_settings", {}).get("Model") in AVAILABLE_MODELS else 0,
+                initial_index=AVAILABLE_MODELS.index(default_settings["Model"])
             ),
-            Switch(id="Streaming", label="OpenAI - Stream Tokens", initial=False),
+            Switch(id="Streaming", label="Stream Tokens", initial=default_settings["Streaming"]),
             Slider(
                 id="Temperature",
-                label="OpenAI - Temperature",
-                initial=0,
+                label="Temperature",
+                initial=default_settings["Temperature"],
                 min=0,
                 max=2,
                 step=0.1,
             ),
         ]
-    ).send()
+    )
+    await settings.send()
+    settings = cl.user_session.get("chat_settings")
+    await cl.send_window_message({
+        "sender": "Server",
+        "message": "chat_settings_update",
+        "data": settings
+    })
+    return settings
+
 
 @cl.on_chat_start
 async def start():
@@ -124,7 +135,7 @@ async def start():
     chat_profile = cl.user_session.get("chat_profile")
     message_list = AGENT_PROFILES[chat_profile].get("message_list") if chat_profile else []
     cl.user_session.set("chat_history", message_list)
-    await cl.Message(content=f"Hi I am {chat_profile}. {AGENT_PROFILES[chat_profile].get('description')}").send()
+    # await cl.Message(content=f"Hi I am {chat_profile}. {AGENT_PROFILES[chat_profile].get('description')}").send()
     # TODO: EXAMPLE OF ASKING FOR USER ACTIONS
     # res = await cl.AskActionMessage(
     #     content="Pick an action!",
@@ -132,11 +143,18 @@ async def start():
     #         cl.Action(name="continue", payload={"value": "continue"}, label="✅ Continue"),
     #         cl.Action(name="cancel", payload={"value": "cancel"}, label="❌ Cancel"),
     #     ],
+    #     author="Assistant",
     # ).send()
 
 @cl.on_settings_update
 async def setup_agent(settings):
     cl.user_session.set("chat_settings", settings)
+    await cl.send_window_message({
+        "sender": "Server",
+        "message": "chat_settings_update",
+        "data": settings
+    })
+
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
