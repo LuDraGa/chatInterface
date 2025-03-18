@@ -2,7 +2,6 @@ import chainlit as cl
 import os
 from dotenv import load_dotenv
 import yaml
-from typing import Optional, List
 from chainlit.types import ThreadDict
 from pathlib import Path
 from models import AgentProfile
@@ -20,23 +19,28 @@ AGENT_PROFILES: dict[str, AgentProfile] = {}
 AVAILABLE_MODELS = [
     "gpt-4o-mini", "gpt-4o", 
     "DeepSeek-V3", "DeepSeek-R1",
-    "AI21-Jamba-1.5-Mini", "AI21-Jamba-1.5-Large",
     "Cohere-command-r-plus-08-2024", 
     "Llama-3.2-11B-Vision-Instruct", "Llama-3.3-70B-Instruct", "Llama-3.2-90B-Vision-Instruct", 
     "Codestral-2501", "Mistral-Large-2411", "Ministral-3B",
-    "Phi-4-mini-instruct", "Phi-4", "Phi-4-multimodal-instruct",
+    "Phi-4-mini-instruct", "Phi-4-multimodal-instruct",
+    
+    # FOLLOWING MODELS THROW ERRORS
+    # "AI21-Jamba-1.5-Mini", "AI21-Jamba-1.5-Large",
+    # "Phi-4": 
+    
+    # FOLLOWING MODELS ARE NOT AVAILABLE FROM GITHUB MARKETPLACE
     # "claude-3.5sonnet",
     # "qwen2.5", 
     # "gemini-1.5pro"
 ]
 # Azure OpenAI configuration
-GITHUB_PAT_TOKEN = os.getenv("GITHUB_PAT_KEY")  
-BASE_URL = os.getenv("AZURE_INFERENCE_BASE_URL")   # Azure OpenAI endpoint
-
-client = ChatCompletionsClient(
-    endpoint=BASE_URL,
-    credential=AzureKeyCredential(GITHUB_PAT_TOKEN),
-)
+# GITHUB_PAT_TOKEN = os.getenv("GITHUB_PAT_KEY")  
+# BASE_URL = os.getenv("AZURE_INFERENCE_BASE_URL")   # Azure OpenAI endpoint
+CHAT_CLIENT = None
+# CHAT_CLIENT = ChatCompletionsClient(
+#     endpoint=BASE_URL,
+#     credential=AzureKeyCredential(GITHUB_PAT_TOKEN),
+# )
 
 # Instrument the OpenAI client
 cl.instrument_openai()
@@ -126,6 +130,28 @@ async def update_chat_settings():
     return settings
 
 
+def get_chat_client():
+    '''
+    Check if the current env api key and base url match client credentials
+    '''
+    global CHAT_CLIENT
+    user_env = cl.user_session.get("env")
+    if not user_env:
+        raise Exception("NOT AUTHORISED. No API_KEY or BASE_URL found")
+
+    prev_endpoint = None if not CHAT_CLIENT else CHAT_CLIENT._config.endpoint
+    prev_api_key = None if not CHAT_CLIENT else CHAT_CLIENT._config.credential._key
+
+    if prev_endpoint != user_env["BASE_URL"] or prev_api_key != user_env["API_KEY"]:
+        print(user_env["BASE_URL"])
+        print(user_env["API_KEY"])
+        CHAT_CLIENT = ChatCompletionsClient(
+            endpoint=user_env["BASE_URL"],
+            credential=AzureKeyCredential(user_env["API_KEY"]),
+        )
+
+    return CHAT_CLIENT
+
 @cl.on_chat_start
 async def start():
     #Set chat settings options
@@ -135,16 +161,7 @@ async def start():
     chat_profile = cl.user_session.get("chat_profile")
     message_list = AGENT_PROFILES[chat_profile].get("message_list") if chat_profile else []
     cl.user_session.set("chat_history", message_list)
-    # await cl.Message(content=f"Hi I am {chat_profile}. {AGENT_PROFILES[chat_profile].get('description')}").send()
-    # TODO: EXAMPLE OF ASKING FOR USER ACTIONS
-    # res = await cl.AskActionMessage(
-    #     content="Pick an action!",
-    #     actions=[
-    #         cl.Action(name="continue", payload={"value": "continue"}, label="✅ Continue"),
-    #         cl.Action(name="cancel", payload={"value": "cancel"}, label="❌ Cancel"),
-    #     ],
-    #     author="Assistant",
-    # ).send()
+
 
 @cl.on_settings_update
 async def setup_agent(settings):
@@ -173,9 +190,9 @@ async def on_message(message: cl.Message):
     # Note: by default, the list of messages is saved and the entire user session is saved in the thread metadata
         chat_history = cl.user_session.get("chat_history")
         chat_settings = cl.user_session.get("chat_settings")
-        print("New Settings\n", chat_settings)
         chat_history.append({"role": "user", "content": message.content})   
-        chat_response = client.complete(
+        chat_client = get_chat_client()
+        chat_response = chat_client.complete(
             messages=chat_history,
             temperature=chat_settings["Temperature"],
             stream=chat_settings["Streaming"],
