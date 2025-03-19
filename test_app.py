@@ -10,6 +10,12 @@ from chainlit.input_widget import Select, Switch, Slider
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
 
+from tavily import TavilyClient
+from literalai import LiteralClient
+
+from open_deep_research.adapter import run_open_deep_research
+
+
 # Load environment variables
 load_dotenv()
 BASE_DIR = Path(__file__).parent
@@ -34,13 +40,20 @@ AVAILABLE_MODELS = [
     # "gemini-1.5pro"
 ]
 # Azure OpenAI configuration
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY") 
+LITERAL_API_KEY = os.getenv("LITERAL_API_KEY") 
+
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+# literalai_client = LiteralClient(api_key=LITERAL_API_KEY) 
 # GITHUB_PAT_TOKEN = os.getenv("GITHUB_PAT_KEY")  
 # BASE_URL = os.getenv("AZURE_INFERENCE_BASE_URL")   # Azure OpenAI endpoint
-CHAT_CLIENT = None
 # CHAT_CLIENT = ChatCompletionsClient(
 #     endpoint=BASE_URL,
 #     credential=AzureKeyCredential(GITHUB_PAT_TOKEN),
 # )
+
+# workflow = StateGraph(state_schema=MessagesState)
+CHAT_CLIENT = None
 
 # Instrument the OpenAI client
 cl.instrument_openai()
@@ -152,8 +165,52 @@ def get_chat_client():
 
     return CHAT_CLIENT
 
+
+
+# Commands to  add datas store
+commands = [
+    # {"id": "Picture", "icon": "image", "description": "Use DALL-E"},
+    # {"id": "Search", "icon": "globe", "description": "Find on the web"},
+    # {
+    #     "id": "Canvas",
+    #     "icon": "pen-line",
+    #     "description": "Collaborate on writing and code",
+    # },
+    # {
+    #     "id": "Dataset",
+    #     "icon": "database",
+    #     "description": "Add/update Datastore",
+    # },
+    # {
+    #     "id": "RAG",
+    #     "icon": "layers",
+    #     "description": "Contextual Search with granular source citations",
+    # },
+    {
+        "id": "OpenDeepSearch",
+        "icon": "search",
+        "description": "Helps browse deeply and gives a final report",
+    },
+    {
+        "id": "CodeInsightSolver",
+        "icon": "code",
+        "description": "Converse and edit codebase: Git url or upload files from local",
+    },
+    {
+        "id": "TextDocsConverser",
+        "icon": "text-document",
+        "description": "Converse and edit text files: Upload files from local: PDF, DOCX, TXT, MD",
+    },
+    {
+        "id": "DeepResearch",
+        "icon": "microscope",
+        "description": "Does indepth independent research and gives a final report",
+    }
+]
+
 @cl.on_chat_start
 async def start():
+    await cl.context.emitter.set_commands(commands)
     #Set chat settings options
     await update_chat_settings()
     
@@ -172,9 +229,9 @@ async def setup_agent(settings):
         "data": settings
     })
 
-
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
+    await cl.context.emitter.set_commands(commands)
     cl.user_session.set("chat_history", [])
     await update_chat_settings()
     
@@ -183,6 +240,37 @@ async def on_chat_resume(thread: ThreadDict):
             cl.user_session.get("chat_history").append({"role": "user", "content": message["output"]})
         elif message["type"] == "assistant_message":
             cl.user_session.get("chat_history").append({"role": "assistant", "content": message["output"]})
+    
+
+
+# from langchain_core.messages import HumanMessage, AIMessageChunk
+# from langchain_core.runnables.config import RunnableConfig
+# from langchain_openai import ChatOpenAI
+
+# from langgraph.checkpoint.memory import MemorySaver
+# from langgraph.graph import START, MessagesState, StateGraph
+
+# workflow = StateGraph(state_schema=MessagesState)
+# model = ChatOpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("AZURE_OPENAI_BASE_URL"), model="gpt-4o-mini", temperature=0)
+
+# def call_model(state: MessagesState):
+#     response = model.invoke(state["messages"])
+#     return {"messages": response}
+
+# workflow.add_edge(START, "model")
+# workflow.add_node("model", call_model)
+
+# memory = MemorySaver()
+
+# app = workflow.compile(checkpointer=memory)
+from langgraph.checkpoint.memory import MemorySaver
+from open_deep_research.graph import builder
+from langgraph.types import Command
+import uuid 
+from IPython.display import Image, display
+memory = MemorySaver()
+graph = builder.compile(checkpointer=memory)
+
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -192,29 +280,46 @@ async def on_message(message: cl.Message):
         chat_settings = cl.user_session.get("chat_settings")
         chat_history.append({"role": "user", "content": message.content})   
         chat_client = get_chat_client()
-        chat_response = chat_client.complete(
-            messages=chat_history,
-            temperature=chat_settings["Temperature"],
-            stream=chat_settings["Streaming"],
-            model=chat_settings["Model"]
-        )
-        
-        if chat_settings["Streaming"]:
-            msg = cl.Message(content="")
-            for update in chat_response:
-                if update.choices and update.choices[0].delta:
-                     await msg.stream_token(update.choices[0].delta.content)
 
-            chat_history.append({"role": "assistant", "content": msg.content})
-            await msg.update()
+
+        if message.command == "OpenDeepSearch":
+            display(Image(graph.get_graph().draw_mermaid_png()))
+            await run_open_deep_research(message.content, graph, chat_settings)
+            await cl.Message(content="OpenDeepSearch completed").send()
+            return 
+            # await step.send()
+            # TODO: This is important.. can create a step dict
+            #  await cl.context.emitter.send_ask_user()
         
+        
+        # await cl.Message(content="Not doing deep research").send()
+
         else:
-            response_content = chat_response.choices[0].message.content
-            chat_history.append({"role": "assistant", "content": response_content})
-            await cl.Message(content=response_content).send()
+            chat_response = chat_client.complete(
+                messages=chat_history,
+                temperature=chat_settings["Temperature"],
+                stream=chat_settings["Streaming"],
+                model=chat_settings["Model"]
+            )
+
+            if chat_settings["Streaming"]:
+                msg = cl.Message(content="")
+                for update in chat_response:
+                    if update.choices and update.choices[0].delta:
+                        await msg.stream_token(update.choices[0].delta.content)
+
+                chat_history.append({"role": "assistant", "content": msg.content})
+                await msg.update()
+            
+            else:
+                response_content = chat_response.choices[0].message.content
+                chat_history.append({"role": "assistant", "content": response_content})
+                await cl.Message(content=response_content).send()
     except Exception as e:
         print(f"Error: {str(e)}")
         await cl.Message(content=f"An error occurred: {str(e)}").send()
+
+
 
 if __name__ == "__main__":
     cl.run()

@@ -9,8 +9,8 @@ import logging
 from typing import List, Optional, Dict, Any, Union
 from urllib.parse import unquote
 
-from exa_py import Exa
-from linkup import LinkupClient
+# from exa_py import Exa
+# from linkup import LinkupClient
 from tavily import AsyncTavilyClient
 from duckduckgo_search import DDGS 
 from bs4 import BeautifulSoup
@@ -156,7 +156,7 @@ async def tavily_search_async(search_queries):
                     ]
                 }
     """
-    tavily_async_client = AsyncTavilyClient()
+    tavily_async_client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
     search_tasks = []
     for query in search_queries:
             search_tasks.append(

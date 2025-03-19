@@ -1,12 +1,15 @@
 # TODO: CHANGES TO BE MADE
 # 1. CUSTOM LLM MODEL FOR WORKING WITH GITHUB MARKETPLACE MODELS
-# 2. GET PROMPTS FROM LITERAL AI INSTEAD OF HARDCODING IN CODEBASE
+# 2. GET PROMPTS FROM LITERAL AI INSTEAD OF HARDCODING IN
 
 
 
 from typing import Literal
 
-from langchain.chat_models import init_chat_model
+from langchain.chat_models import init_chat_model as default_init_chat_model
+# from open_deep_research.custom_llm import CustomLLM
+# from open_deep_research.custom_llm import AzureInferenceLLM
+# from langchain_community.llms import AzureMLOnlineEndpoint
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
@@ -43,7 +46,73 @@ from open_deep_research.utils import (
     select_and_execute_search
 )
 
+
+import os
+from time import time
+from functools import wraps
+
+def patch_invoke(target):
+    if hasattr(target, 'invoke'):
+        original_invoke = target.invoke
+
+        @wraps(original_invoke)
+        def custom_invoke(*args, **kwargs):
+            print(f"[LOG] Invoking with args: {args} and kwargs: {kwargs}")
+            time.sleep(2)
+            result = original_invoke(*args, **kwargs)
+            print(f"[LOG] Invocation result: {result}")
+            return result
+        
+        target.invoke = custom_invoke
+    return target
+
+def patch_with_structure(chat_model):
+    if hasattr(chat_model, 'with_Structure_output'):
+        original_with_structure = chat_model.with_Structure_output
+
+        @wraps(original_with_structure)
+        def custom_with_structure_output(*args, **kwargs):
+            print(f"[LOG] Calling with_Structure_output with args: {args} and kwargs: {kwargs}")
+            time.sleep(2)
+            structure_llm = original_with_structure(*args, **kwargs)
+            patch_invoke(structure_llm)  # Patch its invoke method
+            return structure_llm
+
+        chat_model.with_Structure_output = custom_with_structure_output
+
+def init_chat_model(model: str, model_provider: str, **kwargs):
+    BASE_URL = os.getenv("AZURE_INFERENCE_BASE_URL")
+    # API_KEY = os.getenv("GITHUB_PAT_KEY")
+    API_KEY = os.getenv("GITHUB_PAT_KEY_w")
+    # BASE_URL = os.getenv("OPENAI_BASE_URL")
+    # API_KEY = os.getenv("OPENAI_API_KEY")
+
+    chat_model = default_init_chat_model(
+        base_url=BASE_URL,
+        api_key=API_KEY,
+        model=model, 
+        # model_provider=model_provider,
+    )
+    # Save the original invoke method
+    # original_invoke = chat_model.invoke
+
+    # # Define the new invoke method with logging and delay
+    # def custom_invoke(*args, **kwargs):
+    #     time.sleep(1)  # Delay of 2 seconds
+    #     result = original_invoke(*args, **kwargs)
+    #     return result
+
+    # # Patch the original invoke method
+    # chat_model.invoke = custom_invoke
+    
+    # Patch the direct invoke
+    # patch_invoke(chat_model)
+    # Patch the with_Structure_output flow
+    patch_with_structure(chat_model)
+    return chat_model
+
 ## Nodes -- 
+
 
 async def generate_report_plan(state: ReportState, config: RunnableConfig):
     """Generate the initial report plan with sections.
@@ -61,7 +130,6 @@ async def generate_report_plan(state: ReportState, config: RunnableConfig):
     Returns:
         Dict containing the generated sections
     """
-
     # Inputs
     topic = state["topic"]
     feedback = state.get("feedback_on_report_plan", None)
@@ -84,13 +152,12 @@ async def generate_report_plan(state: ReportState, config: RunnableConfig):
     writer_model = init_chat_model(model=writer_model_name, model_provider=writer_provider) 
     structured_llm = writer_model.with_structured_output(Queries)
 
+
     # Format system instructions
     system_instructions_query = report_planner_query_writer_instructions.format(topic=topic, report_organization=report_structure, number_of_queries=number_of_queries)
-
     # Generate queries  
     results = structured_llm.invoke([SystemMessage(content=system_instructions_query),
                                      HumanMessage(content="Generate search queries that will help with planning the sections of the report.")])
-
     # Web search
     query_list = [query.search_query for query in results.queries]
 
@@ -118,8 +185,7 @@ async def generate_report_plan(state: ReportState, config: RunnableConfig):
 
     else:
         # With other models, thinking tokens are not specifically allocated
-        planner_llm = init_chat_model(model=planner_model, 
-                                      model_provider=planner_provider)
+        planner_llm = init_chat_model(model=planner_model, model_provider=planner_provider)
     
     # Generate the report sections
     structured_llm = planner_llm.with_structured_output(Sections)
@@ -169,6 +235,7 @@ def human_feedback(state: ReportState, config: RunnableConfig) -> Command[Litera
     # If the user approves the report plan, kick off section writing
     if isinstance(feedback, bool) and feedback is True:
         # Treat this as approve and kick off section writing
+        print("Kicking off section writing")
         return Command(goto=[
             Send("build_section_with_web_research", {"topic": topic, "section": s, "search_iterations": 0}) 
             for s in sections 
@@ -178,6 +245,7 @@ def human_feedback(state: ReportState, config: RunnableConfig) -> Command[Litera
     # If the user provides feedback, regenerate the report plan 
     elif isinstance(feedback, str):
         # Treat this as feedback
+        print("STARTING PLAN REGENERATION")
         return Command(goto="generate_report_plan", 
                        update={"feedback_on_report_plan": feedback})
     else:
@@ -204,7 +272,6 @@ def generate_queries(state: SectionState, config: RunnableConfig):
     # Get configuration
     configurable = Configuration.from_runnable_config(config)
     number_of_queries = configurable.number_of_queries
-
     # Generate queries 
     writer_provider = get_config_value(configurable.writer_provider)
     writer_model_name = get_config_value(configurable.writer_model)
@@ -215,7 +282,6 @@ def generate_queries(state: SectionState, config: RunnableConfig):
     system_instructions = query_writer_instructions.format(topic=topic, 
                                                            section_topic=section.description, 
                                                            number_of_queries=number_of_queries)
-
     # Generate queries  
     queries = structured_llm.invoke([SystemMessage(content=system_instructions),
                                      HumanMessage(content="Generate search queries on the provided topic.")])
@@ -392,7 +458,6 @@ def gather_completed_sections(state: ReportState):
     Returns:
         Dict with formatted sections as context
     """
-
     # List of completed sections
     completed_sections = state["completed_sections"]
 
