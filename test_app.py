@@ -14,7 +14,8 @@ from tavily import TavilyClient
 from literalai import LiteralClient
 
 from open_deep_research.adapter import run_open_deep_research
-
+from open_file_converse.adapter import run_open_file_converse
+from open_file_converse.clients_and_connectors import datastore_retriever, get_datastores_list
 
 # Load environment variables
 load_dotenv()
@@ -39,12 +40,14 @@ AVAILABLE_MODELS = [
     # "qwen2.5", 
     # "gemini-1.5pro"
 ]
+
 # Azure OpenAI configuration
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY") 
 LITERAL_API_KEY = os.getenv("LITERAL_API_KEY") 
 
 tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
 # literalai_client = LiteralClient(api_key=LITERAL_API_KEY) 
+
 # GITHUB_PAT_TOKEN = os.getenv("GITHUB_PAT_KEY")  
 # BASE_URL = os.getenv("AZURE_INFERENCE_BASE_URL")   # Azure OpenAI endpoint
 # CHAT_CLIENT = ChatCompletionsClient(
@@ -140,8 +143,12 @@ async def update_chat_settings():
         "message": "chat_settings_update",
         "data": settings
     })
+    await cl.send_window_message({
+        "sender": "Server",
+        "message": "datastores_list_update",
+        "data": get_datastores_list()
+    })
     return settings
-
 
 def get_chat_client():
     '''
@@ -186,26 +193,38 @@ commands = [
     #     "icon": "layers",
     #     "description": "Contextual Search with granular source citations",
     # },
+
+    # {
+    #     "id": "CreateDatastore",
+    #     "icon": "database",
+    #     "description": "Create a new datastore",
+    # },
+    
+    # {
+    #     "id": "OpenDeepSearch",
+    #     "icon": "search",
+    #     "description": "Helps browse deeply and gives a final report",
+    # },
     {
-        "id": "OpenDeepSearch",
-        "icon": "search",
-        "description": "Helps browse deeply and gives a final report",
+        "id": "RegisterDatastore",
+        "icon": "file-volume-2",
+        "description": "Register a datastore",
     },
-    {
-        "id": "CodeInsightSolver",
-        "icon": "code",
-        "description": "Converse and edit codebase: Git url or upload files from local",
-    },
-    {
-        "id": "TextDocsConverser",
-        "icon": "text-document",
-        "description": "Converse and edit text files: Upload files from local: PDF, DOCX, TXT, MD",
-    },
-    {
-        "id": "DeepResearch",
-        "icon": "microscope",
-        "description": "Does indepth independent research and gives a final report",
-    }
+    # {
+    #     "id": "CodeInsightSolver",
+    #     "icon": "code",
+    #     "description": "Converse and edit codebase: Git url or upload files from local",
+    # },
+    # {
+    #     "id": "TextDocsConverser",
+    #     "icon": "text-document",
+    #     "description": "Converse and edit text files: Upload files from local: PDF, DOCX, TXT, MD",
+    # },
+    # {
+    #     "id": "DeepResearch",
+    #     "icon": "microscope",
+    #     "description": "Does indepth independent research and gives a final report",
+    # }
 ]
 
 @cl.on_chat_start
@@ -263,14 +282,15 @@ async def on_chat_resume(thread: ThreadDict):
 # memory = MemorySaver()
 
 # app = workflow.compile(checkpointer=memory)
+
 from langgraph.checkpoint.memory import MemorySaver
 from open_deep_research.graph import builder
 from langgraph.types import Command
 import uuid 
 from IPython.display import Image, display
+
 memory = MemorySaver()
 graph = builder.compile(checkpointer=memory)
-
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -278,6 +298,14 @@ async def on_message(message: cl.Message):
     # Note: by default, the list of messages is saved and the entire user session is saved in the thread metadata
         chat_history = cl.user_session.get("chat_history")
         chat_settings = cl.user_session.get("chat_settings")
+        chat_profile = cl.user_session.get("chat_profile")
+        print(chat_profile)
+        selected_datastore = cl.user_session.get("selected_datastore") 
+        if not selected_datastore:
+            selected_datastore = get_datastores_list()[0]
+            cl.user_session.set("selected_datastore", selected_datastore)
+        print(selected_datastore)
+        print(get_datastores_list())
         chat_history.append({"role": "user", "content": message.content})   
         chat_client = get_chat_client()
 
@@ -290,35 +318,65 @@ async def on_message(message: cl.Message):
             # await step.send()
             # TODO: This is important.. can create a step dict
             #  await cl.context.emitter.send_ask_user()
+         
+        elif message.command == "RegisterDatastore":
+            await run_open_file_converse(message.content, chat_settings)
+            # await cl.Message(content="OpenFileConverse completed").send()
+            return
         
+        # else:
+        #     await cl.Message(content="Not doing deep research").send()
+
+        if chat_profile == "Chat Datastore Agent":
+            answer, retrieved_docs = datastore_retriever(selected_datastore, message.content)
+            content = answer.text()
+            # citations = "\n\n".join([doc.metadata["source"] for doc in retrieved_docs])
+            citations = [doc.metadata["source"] for doc in retrieved_docs]
+            final_response = f"{content}\n\nCitations: {citations}"
+            print("\n\n\nANSWER")
+            print(answer)
+            print(answer.text())
+
+            print("\n\n\nRETRIEVED DOCS")
+            print(retrieved_docs)
+            print("\n\n\nEND\n\n\n")
+            await cl.Message(content=final_response).send()
+            return
         
-        # await cl.Message(content="Not doing deep research").send()
+            # actions = [
+            #     cl.Action(
+            #         name="action_button",
+            #         icon="mouse-pointer-click",
+            #         payload={"value": "example_value"},
+            #         label="Click me!"
+            #     )
+            # ]
+            # await cl.Message(content="", actions=actions).send()
 
-        else:
-            chat_response = chat_client.complete(
-                messages=chat_history,
-                temperature=chat_settings["Temperature"],
-                stream=chat_settings["Streaming"],
-                model=chat_settings["Model"]
-            )
+        # else:
+        #     chat_response = chat_client.complete(
+        #         messages=chat_history,
+        #         temperature=chat_settings["Temperature"],
+        #         stream=chat_settings["Streaming"],
+        #         model=chat_settings["Model"]
+        #     )
 
-            if chat_settings["Streaming"]:
-                msg = cl.Message(content="")
-                for update in chat_response:
-                    if update.choices and update.choices[0].delta:
-                        await msg.stream_token(update.choices[0].delta.content)
+        #     if chat_settings["Streaming"]:
+        #         msg = cl.Message(content="")
+        #         for update in chat_response:
+        #             if update.choices and update.choices[0].delta:
+        #                 await msg.stream_token(update.choices[0].delta.content)
 
-                chat_history.append({"role": "assistant", "content": msg.content})
-                await msg.update()
+        #         chat_history.append({"role": "assistant", "content": msg.content})
+        #         await msg.update()
             
-            else:
-                response_content = chat_response.choices[0].message.content
-                chat_history.append({"role": "assistant", "content": response_content})
-                await cl.Message(content=response_content).send()
+        #     else:
+        #         response_content = chat_response.choices[0].message.content
+        #         chat_history.append({"role": "assistant", "content": response_content})
+        #         await cl.Message(content=response_content).send()
     except Exception as e:
         print(f"Error: {str(e)}")
         await cl.Message(content=f"An error occurred: {str(e)}").send()
-
 
 
 if __name__ == "__main__":
